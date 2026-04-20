@@ -166,7 +166,7 @@ function GLBAvatar({ sequence, playing, onStepChange, onComplete }: Props) {
     }
   });
 
-  return <primitive object={cloned} position={[0, -1.6, 0]} scale={1.4} />;
+  return <primitive object={cloned} position={[0, -1.0, 0]} scale={1.1} />;
 }
 
 /* ---------- Fallback primitivo (caso GLB falhe) ---------- */
@@ -300,7 +300,7 @@ export function Avatar3D(props: Props) {
   return (
     <Canvas
       shadows
-      camera={{ position: [0, 0.2, 3.0], fov: 38 }}
+      camera={{ position: [0, 0.6, 4.2], fov: 38 }}
       style={{ width: "100%", height: "100%" }}
       dpr={[1, 2]}
     >
@@ -314,7 +314,7 @@ export function Avatar3D(props: Props) {
         </Suspense>
       </GLBBoundary>
       <OrbitControls
-        target={[0, 0.1, 0]}
+        target={[0, 0.6, 0]}
         enablePan={false}
         enableZoom={false}
         minPolarAngle={Math.PI / 2.6}
