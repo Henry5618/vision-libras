@@ -202,8 +202,8 @@ export class SimulatedSignDetector {
 
       const now = Date.now();
       if (
-        this.holdFrames >= 8 &&
-        (this.lastSignId !== result.id || now - this.lastSignAt > 2500)
+        this.holdFrames >= 5 &&
+        (this.lastSignId !== result.id || now - this.lastSignAt > 2000)
       ) {
         const sign = SIGN_DICTIONARY.find((s) => s.id === result.id);
         if (sign) {
