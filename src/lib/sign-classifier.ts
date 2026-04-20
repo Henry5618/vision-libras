@@ -1,9 +1,11 @@
 /**
- * Heurísticas simples para classificar sinais do MVP a partir de
- * landmarks reais do MediaPipe (mãos + pose).
- *
- * Coordenadas estão normalizadas (0..1, origem no canto sup. esq.).
+ * Classificador heurístico de sinais de Libras a partir de landmarks
+ * MediaPipe (Hands + Pose). Coordenadas normalizadas (0..1).
  * Lembrando: y MENOR = mais ALTO no quadro.
+ *
+ * Estratégia: começar por gestos discrimináveis SÓ pelas mãos
+ * (mais robusto à câmera/enquadramento) e usar a pose só quando
+ * disponível para refinar.
  */
 
 import type { Landmark } from "./sign-detector";
@@ -13,28 +15,25 @@ export interface ClassifyResult {
   confidence: number;
 }
 
-// Índices MediaPipe Hand
+// Índices MediaPipe Hand (21 pontos)
 const WRIST = 0;
 const THUMB_TIP = 4;
 const INDEX_TIP = 8;
+const INDEX_PIP = 6;
 const INDEX_MCP = 5;
 const MIDDLE_TIP = 12;
+const MIDDLE_PIP = 10;
 const MIDDLE_MCP = 9;
 const RING_TIP = 16;
-const RING_MCP = 13;
+const RING_PIP = 14;
 const PINKY_TIP = 20;
+const PINKY_PIP = 18;
 const PINKY_MCP = 17;
 
-// Índices MediaPipe Pose
+// Pose
 const P_NOSE = 0;
 const P_L_SHOULDER = 11;
 const P_R_SHOULDER = 12;
-const P_L_ELBOW = 13;
-const P_R_ELBOW = 14;
-const P_L_WRIST = 15;
-const P_R_WRIST = 16;
-const P_MOUTH_L = 9;
-const P_MOUTH_R = 10;
 
 interface FingerState {
   index: boolean;
@@ -42,35 +41,28 @@ interface FingerState {
   ring: boolean;
   pinky: boolean;
   thumb: boolean;
+  extendedCount: number;
 }
 
+/** Dedo "estendido" = ponta acima (y menor) do PIP. Mais robusto que distância. */
 function fingersExtended(hand: Landmark[]): FingerState {
-  // Dedo "estendido" se a ponta está mais distante do pulso que o MCP
-  const wrist = hand[WRIST];
-  const dist = (a: Landmark, b: Landmark) =>
-    Math.hypot(a.x - b.x, a.y - b.y);
-  return {
-    index: dist(hand[INDEX_TIP], wrist) > dist(hand[INDEX_MCP], wrist) * 1.4,
-    middle: dist(hand[MIDDLE_TIP], wrist) > dist(hand[MIDDLE_MCP], wrist) * 1.4,
-    ring: dist(hand[RING_TIP], wrist) > dist(hand[RING_MCP], wrist) * 1.4,
-    pinky: dist(hand[PINKY_TIP], wrist) > dist(hand[PINKY_MCP], wrist) * 1.4,
-    thumb:
-      dist(hand[THUMB_TIP], wrist) >
-      dist(hand[INDEX_MCP], wrist) * 0.9,
-  };
+  const index = hand[INDEX_TIP].y < hand[INDEX_PIP].y - 0.01;
+  const middle = hand[MIDDLE_TIP].y < hand[MIDDLE_PIP].y - 0.01;
+  const ring = hand[RING_TIP].y < hand[RING_PIP].y - 0.01;
+  const pinky = hand[PINKY_TIP].y < hand[PINKY_PIP].y - 0.01;
+  // Polegar: usa eixo X (depende de ser mão esquerda/direita), aproximação simples
+  const thumb =
+    Math.abs(hand[THUMB_TIP].x - hand[INDEX_MCP].x) >
+    Math.abs(hand[INDEX_MCP].x - hand[PINKY_MCP].x) * 0.4;
+  const extendedCount = [index, middle, ring, pinky].filter(Boolean).length;
+  return { index, middle, ring, pinky, thumb, extendedCount };
 }
 
-function isOpenPalm(s: FingerState) {
-  return s.index && s.middle && s.ring && s.pinky;
-}
-
-function isFist(s: FingerState) {
-  return !s.index && !s.middle && !s.ring && !s.pinky;
-}
-
-function isPointing(s: FingerState) {
-  return s.index && !s.middle && !s.ring && !s.pinky;
-}
+const isOpenPalm = (s: FingerState) => s.extendedCount >= 3;
+const isFist = (s: FingerState) => s.extendedCount === 0;
+const isPointing = (s: FingerState) => s.index && !s.middle && !s.ring && !s.pinky;
+const isPeace = (s: FingerState) =>
+  s.index && s.middle && !s.ring && !s.pinky;
 
 function avg(...nums: number[]) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
@@ -89,69 +81,71 @@ export function classifySign(
   const hasPose = pose.length >= 25;
   const shoulderY = hasPose
     ? avg(pose[P_L_SHOULDER].y, pose[P_R_SHOULDER].y)
-    : 0.4;
-  const noseY = hasPose ? pose[P_NOSE].y : 0.25;
-  const mouthY = hasPose ? avg(pose[P_MOUTH_L].y, pose[P_MOUTH_R].y) : 0.3;
-  const chestY = shoulderY + 0.08;
+    : 0.45;
+  const noseY = hasPose ? pose[P_NOSE].y : 0.3;
 
-  // ===== Sinais com DUAS mãos =====
+  // Altura relativa: -1 (alto) a +1 (baixo) em relação ao ombro
+  const handHeight = wrist.y - shoulderY;
+
+  // ===== DUAS MÃOS =====
   if (handsList.length === 2) {
     const h2 = handsList[1];
     const f2 = fingersExtended(h2);
+    const wrist2 = h2[WRIST];
     const bothOpen = isOpenPalm(fingers) && isOpenPalm(f2);
     const bothFist = isFist(fingers) && isFist(f2);
-    const bothAboveHead = wrist.y < noseY && h2[WRIST].y < noseY;
+    const bothHigh = wrist.y < noseY + 0.05 && wrist2.y < noseY + 0.05;
 
-    // PRECISO DE AJUDA: ambas as mãos acima da cabeça (abertas ou fechadas)
-    if (bothAboveHead && (bothOpen || bothFist)) {
-      return { id: "ajuda", confidence: 0.85 };
+    // PRECISO DE AJUDA: ambas as mãos próximo/acima da cabeça
+    if (bothHigh && (bothOpen || bothFist)) {
+      return { id: "ajuda", confidence: 0.9 };
     }
-
     // POR FAVOR: ambas as mãos abertas no peito
-    if (bothOpen && wrist.y > shoulderY && wrist.y < chestY + 0.15) {
-      return { id: "por-favor", confidence: 0.78 };
+    if (bothOpen && handHeight > -0.05 && handHeight < 0.25) {
+      return { id: "por-favor", confidence: 0.8 };
     }
   }
 
-  // ===== Sinais com UMA mão =====
+  // ===== UMA MÃO =====
 
-  // OLÁ / ATÉ LOGO: palma aberta acima da cabeça
-  if (isOpenPalm(fingers) && wrist.y < noseY) {
-    return { id: "ola", confidence: 0.82 };
+  // OLÁ / ATÉ LOGO: palma aberta na altura/acima do ombro
+  if (isOpenPalm(fingers) && handHeight < 0.05) {
+    // Se a mão está bem próxima da boca, prioriza OBRIGADO
+    if (handHeight > -0.15 && hasPose && wrist.y > noseY) {
+      return { id: "obrigado", confidence: 0.78 };
+    }
+    return { id: "ola", confidence: 0.85 };
   }
 
-  // QUERO ÁGUA: mão em forma de "C" (polegar+indicador estendidos, outros não)
-  // próxima da boca
+  // ONDE FICA…: indicador apontando, mão na altura do peito ou acima
+  if (isPointing(fingers) && handHeight < 0.2) {
+    // Apontando para CIMA acima do ombro = NÃO
+    if (handHeight < -0.1) {
+      return { id: "nao", confidence: 0.75 };
+    }
+    return { id: "banheiro", confidence: 0.78 };
+  }
+
+  // QUERO ÁGUA: gesto de "C" — polegar e indicador fora, demais dentro
   if (
     fingers.thumb &&
     fingers.index &&
     !fingers.middle &&
     !fingers.ring &&
     !fingers.pinky &&
-    wrist.y < mouthY + 0.1 &&
-    wrist.y > noseY - 0.05
+    handHeight < 0.15
   ) {
     return { id: "agua", confidence: 0.78 };
   }
 
-  // OBRIGADO: palma aberta tocando o queixo (mão aberta perto da boca)
-  if (isOpenPalm(fingers) && Math.abs(wrist.y - mouthY) < 0.1) {
-    return { id: "obrigado", confidence: 0.78 };
+  // SIM: punho fechado próximo do peito
+  if (isFist(fingers) && handHeight > -0.2 && handHeight < 0.3) {
+    return { id: "sim", confidence: 0.72 };
   }
 
-  // ONDE FICA…: indicador apontando, mão na altura do ombro/peito
-  if (isPointing(fingers) && wrist.y > shoulderY - 0.05 && wrist.y < chestY + 0.1) {
-    return { id: "banheiro", confidence: 0.75 };
-  }
-
-  // SIM: mão fechada (punho) na altura do peito
-  if (isFist(fingers) && wrist.y > shoulderY && wrist.y < chestY + 0.15) {
-    return { id: "sim", confidence: 0.7 };
-  }
-
-  // NÃO: indicador apontando para cima na altura da cabeça
-  if (isPointing(fingers) && wrist.y < shoulderY) {
-    return { id: "nao", confidence: 0.7 };
+  // BOM DIA: paz/V (2 dedos) na altura do rosto
+  if (isPeace(fingers) && handHeight < -0.05) {
+    return { id: "bom-dia", confidence: 0.7 };
   }
 
   return null;
