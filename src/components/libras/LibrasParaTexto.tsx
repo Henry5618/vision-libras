@@ -74,8 +74,8 @@ export function LibrasParaTexto() {
         },
       });
       detectorRef.current = det;
-      det.start();
       setActive(true);
+      await det.start(videoRef.current ?? undefined);
     } catch (err) {
       toast.error("Não foi possível acessar a câmera. Verifique as permissões.");
       console.error(err);
