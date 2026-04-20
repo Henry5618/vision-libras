@@ -22,7 +22,10 @@ interface Props {
 
 // Soldier.glb (threejs.org examples) — humanoide com bones Mixamo, sempre disponível via CORS.
 const AVATAR_URL = "https://threejs.org/examples/models/gltf/Soldier.glb";
-useGLTF.preload(AVATAR_URL);
+// Preload só no browser (evita ProgressEvent crash no SSR Node)
+if (typeof window !== "undefined") {
+  useGLTF.preload(AVATAR_URL);
+}
 
 const STEP_DURATION = 1.1;
 
