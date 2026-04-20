@@ -53,16 +53,24 @@ function GLBAvatar({ sequence, playing, onStepChange, onComplete }: Props) {
     cloned.traverse((obj) => {
       if ((obj as THREE.Bone).isBone) map[obj.name] = obj;
     });
-    // Mixamo bones (Soldier.glb usa prefixo "mixamorig")
-    const get = (name: string) => map[name] ?? map[`mixamorig${name}`] ?? map[`mixamorig:${name}`];
+    if (typeof window !== "undefined") {
+      console.log("[Avatar3D] bones:", Object.keys(map));
+    }
+    // Tenta várias convenções de nomes (Soldier.glb usa "mixamorigHead", etc.)
+    const get = (name: string) =>
+      map[name] ??
+      map[`mixamorig${name}`] ??
+      map[`mixamorig:${name}`] ??
+      map[`mixamorig_${name}`] ??
+      map[name.toLowerCase()];
     return {
       head: get("Head"),
       neck: get("Neck"),
-      spine: get("Spine") ?? get("Spine1"),
-      lArm: get("LeftArm"),
-      rArm: get("RightArm"),
-      lForeArm: get("LeftForeArm"),
-      rForeArm: get("RightForeArm"),
+      spine: get("Spine") ?? get("Spine1") ?? get("Spine2"),
+      lArm: get("LeftArm") ?? get("LeftUpperArm"),
+      rArm: get("RightArm") ?? get("RightUpperArm"),
+      lForeArm: get("LeftForeArm") ?? get("LeftLowerArm"),
+      rForeArm: get("RightForeArm") ?? get("RightLowerArm"),
       lHand: get("LeftHand"),
       rHand: get("RightHand"),
     };
