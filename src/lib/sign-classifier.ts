@@ -15,6 +15,30 @@ export interface ClassifyResult {
   confidence: number;
 }
 
+/**
+ * Buffer global de pulsos para detectar movimento (aceno).
+ * Guarda os últimos N x's do pulso da mão dominante.
+ */
+const WRIST_HISTORY: number[] = [];
+const WRIST_HISTORY_MAX = 20;
+
+function pushWristX(x: number) {
+  WRIST_HISTORY.push(x);
+  if (WRIST_HISTORY.length > WRIST_HISTORY_MAX) WRIST_HISTORY.shift();
+}
+
+/** Amplitude horizontal do pulso (0..1). Acima de ~0.06 = movimento lateral claro. */
+function wristLateralRange(): number {
+  if (WRIST_HISTORY.length < 6) return 0;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const x of WRIST_HISTORY) {
+    if (x < min) min = x;
+    if (x > max) max = x;
+  }
+  return max - min;
+}
+
 // Índices MediaPipe Hand (21 pontos)
 const WRIST = 0;
 const THUMB_TIP = 4;
@@ -72,11 +96,16 @@ export function classifySign(
   handsList: Landmark[][],
   pose: Landmark[],
 ): ClassifyResult | null {
-  if (handsList.length === 0) return null;
+  if (handsList.length === 0) {
+    WRIST_HISTORY.length = 0;
+    return null;
+  }
 
   const hand = handsList[0];
   const fingers = fingersExtended(hand);
   const wrist = hand[WRIST];
+  pushWristX(wrist.x);
+  const lateral = wristLateralRange();
 
   const hasPose = pose.length >= 25;
   const shoulderY = hasPose
@@ -84,8 +113,9 @@ export function classifySign(
     : 0.45;
   const noseY = hasPose ? pose[P_NOSE].y : 0.3;
 
-  // Altura relativa: -1 (alto) a +1 (baixo) em relação ao ombro
   const handHeight = wrist.y - shoulderY;
+  const handAboveShoulder = handHeight < 0.1; // mão acima/perto da linha do ombro
+  const handNearMouth = hasPose && wrist.y > noseY && wrist.y < noseY + 0.25;
 
   // ===== DUAS MÃOS =====
   if (handsList.length === 2) {
@@ -100,51 +130,58 @@ export function classifySign(
     if (bothHigh && (bothOpen || bothFist)) {
       return { id: "ajuda", confidence: 0.9 };
     }
-    // POR FAVOR: ambas as mãos abertas no peito
-    if (bothOpen && handHeight > -0.05 && handHeight < 0.25) {
+    // POR FAVOR: ambas as mãos abertas, na altura do peito, próximas entre si
+    const handsClose = Math.abs(wrist.x - wrist2.x) < 0.25;
+    if (bothOpen && handHeight > 0.0 && handHeight < 0.3 && handsClose) {
       return { id: "por-favor", confidence: 0.8 };
     }
   }
 
   // ===== UMA MÃO =====
 
-  // OLÁ / ATÉ LOGO: palma aberta na altura/acima do ombro
-  if (isOpenPalm(fingers) && handHeight < 0.05) {
-    // Se a mão está bem próxima da boca, prioriza OBRIGADO
-    if (handHeight > -0.15 && hasPose && wrist.y > noseY) {
-      return { id: "obrigado", confidence: 0.78 };
-    }
-    return { id: "ola", confidence: 0.85 };
+  // OBRIGADO: mão aberta tocando/saindo do queixo (perto da boca, sem aceno lateral)
+  if (isOpenPalm(fingers) && handNearMouth && lateral < 0.04) {
+    return { id: "obrigado", confidence: 0.82 };
+  }
+
+  // OLÁ / ATÉ LOGO: palma aberta acima do ombro COM aceno lateral
+  if (isOpenPalm(fingers) && handAboveShoulder && lateral > 0.05) {
+    return { id: "ola", confidence: 0.9 };
+  }
+
+  // Fallback: mão aberta bem alta (acima do nariz) sem movimento ainda → ainda assim Olá
+  if (isOpenPalm(fingers) && hasPose && wrist.y < noseY) {
+    return { id: "ola", confidence: 0.75 };
   }
 
   // ONDE FICA…: indicador apontando, mão na altura do peito ou acima
-  if (isPointing(fingers) && handHeight < 0.2) {
+  if (isPointing(fingers) && handHeight < 0.25) {
     // Apontando para CIMA acima do ombro = NÃO
-    if (handHeight < -0.1) {
+    if (handHeight < -0.05 && lateral > 0.04) {
       return { id: "nao", confidence: 0.75 };
     }
     return { id: "banheiro", confidence: 0.78 };
   }
 
-  // QUERO ÁGUA: gesto de "C" — polegar e indicador fora, demais dentro
+  // QUERO ÁGUA: gesto de "C" perto da boca
   if (
     fingers.thumb &&
     fingers.index &&
     !fingers.middle &&
     !fingers.ring &&
     !fingers.pinky &&
-    handHeight < 0.15
+    handNearMouth
   ) {
     return { id: "agua", confidence: 0.78 };
   }
 
-  // SIM: punho fechado próximo do peito
-  if (isFist(fingers) && handHeight > -0.2 && handHeight < 0.3) {
+  // SIM: punho fechado próximo do peito, balançando verticalmente
+  if (isFist(fingers) && handHeight > -0.1 && handHeight < 0.3) {
     return { id: "sim", confidence: 0.72 };
   }
 
   // BOM DIA: paz/V (2 dedos) na altura do rosto
-  if (isPeace(fingers) && handHeight < -0.05) {
+  if (isPeace(fingers) && handHeight < 0.0) {
     return { id: "bom-dia", confidence: 0.7 };
   }
 
